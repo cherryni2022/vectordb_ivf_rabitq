@@ -1,0 +1,22 @@
+[project]
+name = "vectordb"
+version = "0.1.0"
+description = "A lightweight vector database with IVF indexing and RaBitQ quantization"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

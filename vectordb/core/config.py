@@ -1,0 +1,53 @@
+"""
+Configuration classes for VectorDB
+"""
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+@dataclass
+class IVFIndexConfig:
+    """
+    IVF (Inverted File Index) configuration
+
+    Parameters:
+        nlist: Number of clusters (partitions) for k-means clustering
+        nprobe: Number of clusters to search during query time
+        metric: Distance metric ('l2' for Euclidean, 'ip' for inner product)
+    """
+    nlist: int = 100
+    nprobe: int = 10
+    metric: str = "l2"
+
+
+@dataclass
+class RaBitQConfig:
+    """
+    RaBitQ (Randomized Binary Quantization) configuration
+
+    This is a simplified product quantization approach:
+    - Divides vectors into sub-vectors (subspaces)
+    - Each subspace is quantized independently
+    - Uses binary quantization for extreme compression
+
+    Parameters:
+        nbits: Number of bits per subspace (for binary quantization)
+        nsubq: Number of sub-quantizers (splits vector into nsubq parts)
+        use_rabitq: Enable RaBitQ quantization (vs standard PQ)
+        random_seed: Random seed for reproducibility
+    """
+    nbits: int = 8
+    nsubq: int = 8  # Number of sub-vectors for product quantization
+    use_rabitq: bool = True
+    random_seed: Optional[int] = 42
+
+
+@dataclass
+class VectorDBConfig:
+    """
+    Main VectorDB configuration combining IVF and RaBitQ settings
+    """
+    ivf: IVFIndexConfig = field(default_factory=IVFIndexConfig)
+    raq: RaBitQConfig = field(default_factory=RaBitQConfig)
+    dimension: Optional[int] = None  # Will be inferred from data
+    use_quantization: bool = True
