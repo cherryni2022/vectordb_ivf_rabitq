@@ -4,7 +4,7 @@ venv_linux
 .env
 #.claude
 .pytest_cache
-.agent
+#.agent
 examples
 
 # Byte-compiled / optimized / DLL files

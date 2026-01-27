@@ -3,7 +3,7 @@ name = "vectordb"
 version = "0.1.0"
 description = "A lightweight vector database with IVF indexing and RaBitQ quantization"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.20.0",
 ]
