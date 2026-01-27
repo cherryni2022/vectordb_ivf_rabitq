@@ -27,13 +27,44 @@ VectorDB
 
 ## Installation
 
+### Prerequisites
+
+- Python 3.12+ (recommended: Anaconda Python 3.12)
+
+### Setup Steps
+
 ```bash
 # Clone the repository
 git clone <repository-url>
 cd study_vectordb
 
-# Install dependencies (requires numpy)
-pip install numpy
+# Create virtual environment using Anaconda Python 3.12
+/Users/niwen/anaconda3/bin/python -m venv .venv
+
+# Activate the virtual environment
+source .venv/bin/activate
+
+# Upgrade pip
+pip install --upgrade pip
+
+# Install the package with dev dependencies (editable mode)
+pip install -e ".[dev]"
+```
+
+### Alternative: Using uv (recommended)
+
+```bash
+# Install Python 3.12 (if not already installed)
+uv python install 3.12
+
+# Create virtual environment
+uv venv .venv --python 3.12
+
+# Activate the virtual environment
+source .venv/bin/activate
+
+# Sync dependencies
+uv sync --dev
 ```
 
 ## Quick Start

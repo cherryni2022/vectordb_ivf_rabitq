@@ -26,6 +26,22 @@ The codebase is organized into four main components:
 - `add_vectors()` → Storage → `build()` → IVF k-means + True RaBitQ encoding
 - `search(accelerated=True)` → Find nprobe closest centroids → RaBitQ approximate distances → top-k candidates → exact rerank → return results
 
+## Environment Setup
+
+```bash
+# Install Python 3.12 (if not already installed)
+uv python install 3.12
+
+# Create virtual environment
+uv venv .venv --python 3.12
+
+# Activate the virtual environment
+source .venv/bin/activate
+
+# Sync dependencies (including dev dependencies)
+uv sync --dev
+```
+
 ## Common Commands
 
 ```bash
