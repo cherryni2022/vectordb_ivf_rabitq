@@ -49,6 +49,9 @@ class TrueRaBitQ:
         random_seed: Random seed for reproducibility
     """
     
+    # Static popcount lookup table (class-level, created once)
+    _POPCOUNT_TABLE = np.array([bin(i).count('1') for i in range(256)], dtype=np.int32)
+    
     def __init__(self, dimension: int, random_seed: Optional[int] = 42):
         self.dimension = dimension
         self.random_seed = random_seed
@@ -211,12 +214,9 @@ class TrueRaBitQ:
         # XOR: different bits become 1
         xor_result = np.bitwise_xor(database_codes, query_code)
         
-        # Count bits using lookup table (faster than unpackbits)
-        # Pre-computed popcount for all byte values 0-255
-        popcount_table = np.array([bin(i).count('1') for i in range(256)], dtype=np.int32)
-        
+        # Use class-level pre-computed popcount table (avoids recreation per call)
         # Sum popcount for each byte
-        hamming_distances = np.sum(popcount_table[xor_result], axis=1)
+        hamming_distances = np.sum(self._POPCOUNT_TABLE[xor_result], axis=1)
         
         return hamming_distances
     

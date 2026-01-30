@@ -252,6 +252,7 @@ class TestRaBitQWithRerank:
 
         # Calculate recall
         recall = len(set(indices) & set(ground_truth)) / 10
+        print(f"Recall: {recall}")
         
         # With reranking, recall should be very high
         assert recall >= 0.8, f"Recall too low: {recall}"

@@ -34,10 +34,26 @@ class IVFIndex:
         metric: Distance metric ('l2' or 'ip')
     """
 
-    def __init__(self, nlist: int = 100, nprobe: int = 10, metric: str = "l2"):
+    def __init__(self, nlist: int = 100, nprobe: int = 10, metric: str = "l2",
+                 use_minibatch: bool = False, minibatch_size: int = 1024,
+                 chunk_size: int = 10000):
+        """
+        Initialize IVF Index
+        
+        Args:
+            nlist: Number of clusters (partitions)
+            nprobe: Number of clusters to search during query
+            metric: Distance metric ('l2' or 'ip')
+            use_minibatch: Use mini-batch k-means for large datasets
+            minibatch_size: Batch size for mini-batch k-means
+            chunk_size: Chunk size for memory-efficient distance computation
+        """
         self.nlist = nlist
         self.nprobe = nprobe
         self.metric = metric
+        self.use_minibatch = use_minibatch
+        self.minibatch_size = minibatch_size
+        self.chunk_size = chunk_size
         self.dimension: Optional[int] = None
         self.is_built = False
 
@@ -101,10 +117,19 @@ class IVFIndex:
             self.nlist = min(n_vectors, 10)
 
         # Step 1: Run k-means clustering to get centroids
-        centroids = self._kmeans_clustering(vectors, self.nlist)
+        # Auto-select mini-batch for large datasets (>100K vectors)
+        use_minibatch = self.use_minibatch or n_vectors > 100000
+        if use_minibatch:
+            centroids = self._minibatch_kmeans(vectors, self.nlist)
+        else:
+            centroids = self._kmeans_clustering(vectors, self.nlist)
 
         # Step 2: Assign each vector to its nearest centroid
-        distances = self._compute_distances_matrix(vectors, centroids)
+        # Use chunked computation for large datasets
+        if n_vectors > self.chunk_size:
+            distances = self._compute_distances_chunked(vectors, centroids)
+        else:
+            distances = self._compute_distances_matrix(vectors, centroids)
         cluster_assignments = np.argmin(distances, axis=1)
 
         # Step 3: Build inverted lists
@@ -123,6 +148,30 @@ class IVFIndex:
         self.stats.total_vectors = n_vectors
         self.stats.num_clusters = self.nlist
         self.stats.avg_vectors_per_cluster = n_vectors / self.nlist
+    
+    def _compute_distances_chunked(self, queries: np.ndarray, 
+                                    points: np.ndarray) -> np.ndarray:
+        """
+        Compute distances in chunks to avoid memory overflow
+        
+        Args:
+            queries: Shape (n_queries, dimension)
+            points: Shape (n_points, dimension)
+            
+        Returns:
+            distances: Shape (n_queries, n_points)
+        """
+        n_queries = queries.shape[0]
+        n_points = points.shape[0]
+        distances = np.empty((n_queries, n_points), dtype=np.float32)
+        
+        # Process queries in chunks
+        for i in range(0, n_queries, self.chunk_size):
+            end = min(i + self.chunk_size, n_queries)
+            chunk = queries[i:end]
+            distances[i:end, :] = self._compute_distances_matrix(chunk, points)
+        
+        return distances
 
     def _kmeans_clustering(self, vectors: np.ndarray, n_clusters: int, max_iter: int = 100,
                            tol: float = 1e-4) -> np.ndarray:
@@ -138,7 +187,7 @@ class IVFIndex:
         Returns:
             centroids: Shape (n_clusters, dimension)
         """
-        n_vectors = vectors.shape[0]
+        n_vectors, dimension = vectors.shape
 
         # Initialize centroids using k-means++ for better quality
         centroids = self._kmeans_plusplus_init(vectors, n_clusters)
@@ -148,18 +197,17 @@ class IVFIndex:
             distances = self._compute_distances_matrix(vectors, centroids)
             assignments = np.argmin(distances, axis=1)
 
-            # Update centroids
-            new_centroids = np.zeros_like(centroids)
-            counts = np.zeros(n_clusters)
-
-            for i in range(n_clusters):
-                mask = assignments == i
-                if np.any(mask):
-                    new_centroids[i] = np.mean(vectors[mask], axis=0)
-                    counts[i] = np.sum(mask)
-                else:
-                    # Reinitialize empty clusters to a random point
-                    new_centroids[i] = vectors[np.random.choice(n_vectors)]
+            # Vectorized centroid update using np.add.at and np.bincount
+            new_centroids = self._vectorized_centroid_update(
+                vectors, assignments, n_clusters, dimension
+            )
+            
+            # Handle empty clusters
+            empty_clusters = np.where(np.bincount(assignments, minlength=n_clusters) == 0)[0]
+            if len(empty_clusters) > 0:
+                new_centroids = self._handle_empty_clusters(
+                    vectors, assignments, new_centroids, empty_clusters
+                )
 
             # Check convergence
             if np.max(np.linalg.norm(new_centroids - centroids, axis=1)) < tol:
@@ -167,6 +215,74 @@ class IVFIndex:
 
             centroids = new_centroids
 
+        return centroids
+    
+    def _vectorized_centroid_update(self, vectors: np.ndarray, 
+                                     assignments: np.ndarray, 
+                                     n_clusters: int,
+                                     dimension: int) -> np.ndarray:
+        """
+        Vectorized centroid update using np.add.at for O(n) performance
+        
+        Args:
+            vectors: Shape (n_vectors, dimension)
+            assignments: Shape (n_vectors,) cluster assignments
+            n_clusters: Number of clusters
+            dimension: Vector dimension
+            
+        Returns:
+            new_centroids: Shape (n_clusters, dimension)
+        """
+        # Count vectors per cluster
+        counts = np.bincount(assignments, minlength=n_clusters).astype(np.float32)
+        counts = np.maximum(counts, 1)  # Avoid division by zero
+        
+        # Sum vectors per cluster using np.add.at
+        new_centroids = np.zeros((n_clusters, dimension), dtype=np.float32)
+        np.add.at(new_centroids, assignments, vectors)
+        
+        # Compute mean
+        new_centroids /= counts[:, np.newaxis]
+        
+        return new_centroids
+    
+    def _handle_empty_clusters(self, vectors: np.ndarray,
+                                assignments: np.ndarray,
+                                centroids: np.ndarray,
+                                empty_clusters: np.ndarray) -> np.ndarray:
+        """
+        Smart handling of empty clusters: pick farthest point from largest cluster
+        
+        Args:
+            vectors: Shape (n_vectors, dimension)
+            assignments: Current cluster assignments
+            centroids: Current centroids
+            empty_clusters: Indices of empty clusters
+            
+        Returns:
+            Updated centroids
+        """
+        cluster_sizes = np.bincount(assignments, minlength=len(centroids))
+        
+        for cluster_idx in empty_clusters:
+            # Find largest cluster
+            largest_cluster = np.argmax(cluster_sizes)
+            
+            # Find farthest point in largest cluster
+            mask = assignments == largest_cluster
+            cluster_vectors = vectors[mask]
+            cluster_centroid = centroids[largest_cluster]
+            
+            distances = np.sum((cluster_vectors - cluster_centroid) ** 2, axis=1)
+            farthest_local_idx = np.argmax(distances)
+            
+            # Use farthest point as new centroid
+            centroids[cluster_idx] = cluster_vectors[farthest_local_idx]
+            
+            # Update cluster size (approximate, will be corrected in next iteration)
+            cluster_sizes[largest_cluster] -= 1
+            cluster_sizes[cluster_idx] = 1
+        
         return centroids
 
     def _kmeans_plusplus_init(self, vectors: np.ndarray, n_clusters: int) -> np.ndarray:
@@ -206,6 +322,70 @@ class IVFIndex:
             centroids.append(vectors[next_idx])
 
         return np.array(centroids)
+    
+    def _minibatch_kmeans(self, vectors: np.ndarray, n_clusters: int,
+                          max_iter: int = 100, tol: float = 1e-4) -> np.ndarray:
+        """
+        Mini-Batch K-Means implementation for large-scale datasets
+        
+        Each iteration only uses a random subset of vectors for faster convergence.
+        Uses incremental centroid update with decaying learning rate.
+        
+        Args:
+            vectors: Shape (n_vectors, dimension)
+            n_clusters: Number of clusters
+            max_iter: Maximum iterations
+            tol: Convergence tolerance
+            
+        Returns:
+            centroids: Shape (n_clusters, dimension)
+        """
+        n_vectors, dimension = vectors.shape
+        batch_size = min(self.minibatch_size, n_vectors)
+        
+        # Initialize centroids using k-means++ (on a sample for efficiency)
+        sample_size = min(batch_size * 10, n_vectors)
+        sample_indices = np.random.choice(n_vectors, sample_size, replace=False)
+        centroids = self._kmeans_plusplus_init(vectors[sample_indices], n_clusters)
+        centroids = centroids.astype(np.float32)
+        
+        # Track per-centroid update counts for averaging
+        centroid_counts = np.zeros(n_clusters, dtype=np.float32)
+        
+        prev_centroids = centroids.copy()
+        
+        for iteration in range(max_iter):
+            # Random sample mini-batch
+            batch_indices = np.random.choice(n_vectors, batch_size, replace=False)
+            batch = vectors[batch_indices]
+            
+            # Assign batch to nearest centroids
+            distances = self._compute_distances_matrix(batch, centroids)
+            assignments = np.argmin(distances, axis=1)
+            
+            # Incremental centroid update with streaming averaging
+            for i in range(n_clusters):
+                mask = assignments == i
+                if np.any(mask):
+                    cluster_vectors = batch[mask]
+                    n_new = np.sum(mask)
+                    
+                    # Update centroid with weighted average (streaming mean)
+                    old_count = centroid_counts[i]
+                    new_count = old_count + n_new
+                    
+                    # Weighted update: c_new = (old_count * c_old + sum(new_vectors)) / new_count
+                    centroids[i] = (old_count * centroids[i] + np.sum(cluster_vectors, axis=0)) / new_count
+                    centroid_counts[i] = new_count
+            
+            # Check convergence every 10 iterations
+            if iteration > 0 and iteration % 10 == 0:
+                shift = np.max(np.linalg.norm(centroids - prev_centroids, axis=1))
+                if shift < tol:
+                    break
+                prev_centroids = centroids.copy()
+        
+        return centroids
 
     def search(self, query: np.ndarray, k: int = 10) -> List[Tuple[int, float]]:
         """
@@ -427,7 +607,11 @@ class IVFIndex:
             "nprobe": self.nprobe,
             "metric": self.metric,
             "dimension": self.dimension,
-            "is_built": self.is_built
+            "is_built": self.is_built,
+            # New optimization parameters
+            "use_minibatch": self.use_minibatch,
+            "minibatch_size": self.minibatch_size,
+            "chunk_size": self.chunk_size,
         }
         with open(path, "wb") as f:
             pickle.dump(save_data, f)
@@ -441,7 +625,11 @@ class IVFIndex:
         index = cls(
             nlist=int(data["nlist"]),
             nprobe=int(data["nprobe"]),
-            metric=str(data["metric"])
+            metric=str(data["metric"]),
+            # Load new optimization parameters with defaults for backward compatibility
+            use_minibatch=data.get("use_minibatch", False),
+            minibatch_size=data.get("minibatch_size", 1024),
+            chunk_size=data.get("chunk_size", 10000),
         )
         index.centroids = data["centroids"]
         index.vectors = data["vectors"]
