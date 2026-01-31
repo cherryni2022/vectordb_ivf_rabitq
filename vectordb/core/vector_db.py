@@ -8,10 +8,11 @@ from typing import List, Tuple, Optional, Dict, Any, Union
 from pathlib import Path
 from dataclasses import dataclass
 
-from vectordb.core.config import VectorDBConfig, IVFIndexConfig, RaBitQConfig
+from vectordb.core.config import VectorDBConfig, IVFIndexConfig, RaBitQConfig, HNSWIndexConfig
 from vectordb.index.ivf_index import IVFIndex, IVFIndexStats
 from vectordb.quantization.rabitq import RaBitQ, RaBitQStats
 from vectordb.quantization.true_rabitq import TrueRaBitQ, TrueRaBitQStats
+from vectordb.index.hnsw_index import HNSWIndex, HNSWIndexStats
 from vectordb.storage.vector_storage import VectorStorage, InMemoryVectorStorage
 
 
@@ -65,6 +66,7 @@ class VectorDB:
             nprobe=self.config.ivf.nprobe,
             metric=self.config.ivf.metric
         )
+        self.hnsw_index = HNSWIndex(self.config.hnsw)
         self.quantizer: Optional[RaBitQ] = None
         self.true_rabitq: Optional[TrueRaBitQ] = None  # New: True RaBitQ for accelerated search
 
@@ -118,8 +120,11 @@ class VectorDB:
 
         use_quant = use_quantization if use_quantization is not None else self.config.use_quantization
 
-        # Build IVF index
-        self.ivf_index.build(vectors)
+        # Build Index
+        if self.config.index_type == "ivf":
+            self.ivf_index.build(vectors)
+        elif self.config.index_type == "hnsw":
+            self.hnsw_index.build(vectors)
 
         # Build old-style PQ quantizer if enabled (for backward compatibility)
         if use_quant:
@@ -173,7 +178,9 @@ class VectorDB:
             self.ivf_index.nprobe = nprobe
 
         # Choose search method
-        if accelerated and self.true_rabitq is not None:
+        if self.config.index_type == "hnsw":
+            results = self.hnsw_index.search(query, k)
+        elif accelerated and self.true_rabitq is not None:
             # Use IVF + RaBitQ accelerated search
             results = self.ivf_index.search_with_rabitq(
                 query, k, self.true_rabitq, rerank_factor
@@ -227,7 +234,8 @@ class VectorDB:
             Dictionary containing statistics about the database
         """
         storage_stats = self.storage.get_stats()
-        ivf_stats = self.ivf_index.get_stats() if self.is_built else IVFIndexStats()
+        ivf_stats = self.ivf_index.get_stats() if self.is_built and self.config.index_type == "ivf" else None
+        hnsw_stats = self.hnsw_index.get_stats() if self.is_built and self.config.index_type == "hnsw" else None
         raq_stats = self.quantizer.get_stats() if self.quantizer else RaBitQStats()
         true_raq_stats = self.true_rabitq.get_stats() if self.true_rabitq else None
 
@@ -247,7 +255,15 @@ class VectorDB:
                 "nlist": self.config.ivf.nlist,
                 "nprobe": self.config.ivf.nprobe,
                 "metric": self.config.ivf.metric,
-            },
+            } if ivf_stats else None,
+            "hnsw_index": {
+                "total_vectors": hnsw_stats.total_vectors,
+                "max_level": hnsw_stats.max_level,
+                "avg_neighbors": hnsw_stats.avg_neighbors,
+                "M": self.config.hnsw.M,
+                "ef_construction": self.config.hnsw.ef_construction,
+                "ef_search": self.config.hnsw.ef_search,
+            } if hnsw_stats else None,
             "quantization": {
                 "nsubq": raq_stats.nsubq,
                 "nbits": raq_stats.nbits,
@@ -274,7 +290,11 @@ class VectorDB:
         # Save index
         if self.is_built:
             save_path = Path(path) if path else self.storage.base_path
-            self.ivf_index.save(str(save_path / "index.npz"))
+            
+            if self.config.index_type == "ivf":
+                self.ivf_index.save(str(save_path / "index.npz"))
+            elif self.config.index_type == "hnsw":
+                self.hnsw_index.save(str(save_path / "hnsw_index.pkl"))
 
             # Save old-style quantizer
             if self.quantizer:
@@ -300,10 +320,17 @@ class VectorDB:
 
         # Load index
         load_path = Path(path) if path else self.storage.base_path
+        
+        # Check for IVF index
         index_file = load_path / "index.npz"
+        # Check for HNSW index
+        hnsw_file = load_path / "hnsw_index.pkl"
 
-        if index_file.exists():
+        if self.config.index_type == "ivf" and index_file.exists():
             self.ivf_index = IVFIndex.load(str(index_file))
+            self.is_built = True
+        elif self.config.index_type == "hnsw" and hnsw_file.exists():
+            self.hnsw_index = HNSWIndex.load(str(hnsw_file))
             self.is_built = True
 
         # Load old-style quantizer
@@ -324,6 +351,7 @@ class VectorDB:
             nprobe=self.config.ivf.nprobe,
             metric=self.config.ivf.metric
         )
+        self.hnsw_index = HNSWIndex(self.config.hnsw)
         self.quantizer = None
         self.true_rabitq = None
         self.is_built = False
@@ -352,6 +380,7 @@ def create_vector_db(
     """
     config = VectorDBConfig(
         ivf=IVFIndexConfig(nlist=nlist, nprobe=nprobe),
+        hnsw=HNSWIndexConfig(),
         raq=RaBitQConfig(),
         dimension=dimension,
         use_quantization=use_quantization

@@ -2,7 +2,7 @@
 Configuration classes for VectorDB
 """
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Literal
 
 
 @dataclass
@@ -17,6 +17,23 @@ class IVFIndexConfig:
     """
     nlist: int = 100
     nprobe: int = 10
+    metric: str = "l2"
+
+
+@dataclass
+class HNSWIndexConfig:
+    """
+    HNSW (Hierarchical Navigable Small World) configuration
+
+    Parameters:
+        M: Maximum number of connections per element in layer 0
+        ef_construction: Size of the dynamic list for the nearest neighbors (used during construction)
+        ef_search: Size of the dynamic list for the nearest neighbors (used during search)
+        metric: Distance metric ('l2' for Euclidean, 'ip' for inner product)
+    """
+    M: int = 16
+    ef_construction: int = 200
+    ef_search: int = 50
     metric: str = "l2"
 
 
@@ -48,6 +65,8 @@ class VectorDBConfig:
     Main VectorDB configuration combining IVF and RaBitQ settings
     """
     ivf: IVFIndexConfig = field(default_factory=IVFIndexConfig)
+    hnsw: HNSWIndexConfig = field(default_factory=HNSWIndexConfig)
     raq: RaBitQConfig = field(default_factory=RaBitQConfig)
     dimension: Optional[int] = None  # Will be inferred from data
+    index_type: Literal["ivf", "hnsw"] = "ivf"
     use_quantization: bool = True

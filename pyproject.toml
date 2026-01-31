@@ -28,6 +28,10 @@ accel = [
     "numba>=0.56.0",
     "torch>=2.0.0",
 ]
+# High-performance HNSW implementation
+hnsw = [
+    "hnswlib>=0.7.0",
+]
 
 [build-system]
 requires = ["hatchling"]
